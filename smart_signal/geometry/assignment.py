@@ -1,12 +1,47 @@
-"""Assign detections to drawn shapes and count per-direction traffic."""
+"""Assign detections to drawn shapes, filter to annotated lanes, and count traffic."""
 
-import math
-from typing import Any, Dict, List, Tuple
-
-import cv2
-import numpy as np
+from typing import Any, Dict, List, Optional
 
 from geometry.shapes import point_in_polygon, crossed_line
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LANE FILTER — a vehicle only exists if it sits inside a drawn lane
+# ─────────────────────────────────────────────────────────────────────────────
+
+def filter_to_lanes(
+    dets: List[Dict[str, Any]],
+    shapes: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Keep only vehicles whose center lies inside a manually drawn lane.
+
+    - Vehicles inside a drawn lane  → kept, tagged in_lane=True.
+    - Vehicles outside every lane   → dropped entirely (not shown, not counted).
+    - Pedestrians                   → always kept (they are governed by crossings).
+    - No lanes drawn yet            → whole-frame monitoring fallback so the
+                                      system still works before annotation.
+    """
+    lane_polys = [s["points"] for s in shapes if s["label"] == "lane"]
+
+    # Pre-annotation fallback: nothing drawn → monitor the whole frame.
+    if not lane_polys:
+        for d in dets:
+            d["in_lane"] = d["category"] == "vehicle"
+        return dets
+
+    kept: List[Dict[str, Any]] = []
+    for d in dets:
+        if d["category"] != "vehicle":
+            d["in_lane"] = False
+            kept.append(d)
+            continue
+
+        if any(point_in_polygon(d["center"], poly) for poly in lane_polys):
+            d["in_lane"] = True
+            kept.append(d)
+        # else: outside every drawn lane → excluded
+
+    return kept
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -16,12 +51,9 @@ from geometry.shapes import point_in_polygon, crossed_line
 def assign_to_shapes(
     dets: List[Dict[str, Any]],
     shapes: List[Dict[str, Any]],
-    track_history: dict | None = None,
+    track_history: Optional[dict] = None,
 ) -> List[Dict[str, Any]]:
-    """Tag each detection with the lane / crossing / count-line it falls in.
-
-    Mutates each detection dict in-place and returns the list.
-    """
+    """Tag each detection with the lane / crossing / count-line it falls in."""
     lanes = [s for s in shapes if s["label"] == "lane"]
     crossings = [s for s in shapes if s["label"] == "zebra_crossing"]
     count_lines = [s for s in shapes if s["label"] == "count_line"]
@@ -43,12 +75,11 @@ def assign_to_shapes(
                 d["in_crossing"] = True
                 break
 
-        # Count-line crossing (needs previous position from track history)
+        # Count-line crossing (needs the previous position from track history)
         if track_history and d["track_id"] in track_history:
             hist = track_history[d["track_id"]]
             if len(hist) >= 2:
-                prev = hist[-2]
-                curr = hist[-1]
+                prev, curr = hist[-2], hist[-1]
                 for cl in count_lines:
                     if len(cl["points"]) == 2:
                         if crossed_line(prev, curr, cl["points"][0], cl["points"][1]):
@@ -66,7 +97,14 @@ def counts_for_direction(
     dets: List[Dict[str, Any]],
     shapes: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    """Count vehicles (in-lane, incoming + focus) and pedestrians.
+
+    Vehicles that did not survive filter_to_lanes are already gone, so every
+    vehicle here is inside a drawn lane. Among those, only incoming + focus
+    lanes feed the signal decision.
+    """
     lanes_by_id = {s["id"]: s for s in shapes if s["label"] == "lane"}
+    has_lanes = bool(lanes_by_id)
 
     vehicle_count = 0
     pedestrian_count = 0
@@ -77,14 +115,21 @@ def counts_for_direction(
 
     for d in dets:
         if d["category"] == "vehicle":
-            # ── Only count vehicles that are inside a drawn lane ──────
-            if not d.get("in_lane", True):
+            if not d.get("in_lane", False):
                 continue
-            lane = lanes_by_id.get(d["lane_id"])
-            if lane and lane.get("travel") == "incoming" and lane.get("focus", True):
+
+            if not has_lanes:
+                # Whole-frame fallback (no lanes drawn)
                 vehicle_count += 1
                 if d["state"] == "waiting":
                     waiting_vehicles += 1
+            else:
+                lane = lanes_by_id.get(d["lane_id"])
+                if lane and lane.get("travel") == "incoming" and lane.get("focus", True):
+                    vehicle_count += 1
+                    if d["state"] == "waiting":
+                        waiting_vehicles += 1
+
             if d.get("crossed_count_line"):
                 count_line_crossings += 1
 
@@ -103,27 +148,3 @@ def counts_for_direction(
         "crossing_pedestrians": crossing_pedestrians,
         "count_line_crossings": count_line_crossings,
     }
-def filter_to_lanes(
-    dets: List[Dict[str, Any]],
-    shapes: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Tag each detection with whether its center sits inside a drawn lane.
-
-    Pedestrians are always kept. Vehicles get an in_lane flag that
-    counts_for_direction uses to ignore out-of-lane traffic.
-    """
-    lane_polys = [s["points"] for s in shapes if s["label"] == "lane"]
-
-    if not lane_polys:
-        for d in dets:
-            d["in_lane"] = True
-        return dets
-
-    for d in dets:
-        if d["category"] == "pedestrian":
-            d["in_lane"] = False
-        else:
-            d["in_lane"] = any(
-                point_in_polygon(d["center"], poly) for poly in lane_polys
-            )
-    return dets
