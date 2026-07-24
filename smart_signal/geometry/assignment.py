@@ -66,10 +66,6 @@ def counts_for_direction(
     dets: List[Dict[str, Any]],
     shapes: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Count vehicles (incoming + focus lanes only) and pedestrians.
-
-    Returns a dict with all metrics the decision engine needs.
-    """
     lanes_by_id = {s["id"]: s for s in shapes if s["label"] == "lane"}
 
     vehicle_count = 0
@@ -81,6 +77,9 @@ def counts_for_direction(
 
     for d in dets:
         if d["category"] == "vehicle":
+            # ── Only count vehicles that are inside a drawn lane ──────
+            if not d.get("in_lane", True):
+                continue
             lane = lanes_by_id.get(d["lane_id"])
             if lane and lane.get("travel") == "incoming" and lane.get("focus", True):
                 vehicle_count += 1
@@ -104,3 +103,27 @@ def counts_for_direction(
         "crossing_pedestrians": crossing_pedestrians,
         "count_line_crossings": count_line_crossings,
     }
+def filter_to_lanes(
+    dets: List[Dict[str, Any]],
+    shapes: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Tag each detection with whether its center sits inside a drawn lane.
+
+    Pedestrians are always kept. Vehicles get an in_lane flag that
+    counts_for_direction uses to ignore out-of-lane traffic.
+    """
+    lane_polys = [s["points"] for s in shapes if s["label"] == "lane"]
+
+    if not lane_polys:
+        for d in dets:
+            d["in_lane"] = True
+        return dets
+
+    for d in dets:
+        if d["category"] == "pedestrian":
+            d["in_lane"] = False
+        else:
+            d["in_lane"] = any(
+                point_in_polygon(d["center"], poly) for poly in lane_polys
+            )
+    return dets

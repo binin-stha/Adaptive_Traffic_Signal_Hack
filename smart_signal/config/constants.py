@@ -2,12 +2,14 @@
 
 DIRECTIONS = ["north", "south", "east", "west"]
 
-DIR_COLORS = {
-    "north": "#3B82F6",
-    "south": "#22C55E",
-    "east": "#F59E0B",
-    "west": "#EC4899",
+DIR_META = {
+    "north": {"label": "NORTH", "arrow": "▲", "color": "#3B82F6", "pos": (0, 1)},
+    "west":  {"label": "WEST",  "arrow": "◀", "color": "#EC4899", "pos": (1, 0)},
+    "east":  {"label": "EAST",  "arrow": "▶", "color": "#F59E0B", "pos": (1, 2)},
+    "south": {"label": "SOUTH", "arrow": "▼", "color": "#22C55E", "pos": (2, 1)},
 }
+
+DIR_COLORS = {d: DIR_META[d]["color"] for d in DIRECTIONS}
 
 WEIGHTS = {"vehicle": 1.5, "pedestrian": 1.2}
 BASE_TIME = 10
