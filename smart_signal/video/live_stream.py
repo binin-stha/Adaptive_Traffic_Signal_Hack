@@ -1,9 +1,9 @@
 """Live MJPEG streaming engine — true real-time tracking.
 
-One worker thread per direction runs YOLO + tracking continuously, decoupled
-from Streamlit's rerun cycle. Annotated frames are served as MJPEG over a tiny
-stdlib HTTP server; the browser plays them through a plain <img> tag. Only
-OpenCV + the standard library — no av / aiortc / WebRTC.
+One worker thread per direction runs YOLO + tracking continuously, fully
+decoupled from Streamlit's rerun cycle. Annotated frames are served as MJPEG
+over a tiny stdlib HTTP server; the browser plays them through a plain <img>
+tag. Only OpenCV + the standard library — no av / aiortc / WebRTC.
 """
 
 import threading
@@ -18,7 +18,7 @@ from models.detector import load_model_fresh, run_tracking
 from geometry.assignment import assign_to_shapes, counts_for_direction, filter_to_lanes
 from tracking.pedestrian_wait import PedestrianWaitTracker
 from visualization.annotate import annotate_frame
-from video.sources import ImageSource, VideoSource
+from video.sources import ImageSource, VideoSource, CameraSource
 
 
 # ── Thread-safe shared state ──────────────────────────────────────────────
@@ -72,7 +72,7 @@ class _MJPEGHandler(BaseHTTPRequestHandler):
             pass
 
     def log_message(self, *args):
-        pass
+        pass  # silence per-request logs
 
 
 def ensure_server() -> int:
@@ -179,6 +179,13 @@ def pause_all():
     with shared.lock:
         for d in shared.running:
             shared.running[d] = False
+
+
+def resume_all():
+    with shared.lock:
+        for d in shared.alive:
+            if shared.alive[d]:
+                shared.running[d] = True
 
 
 def stop_all():
