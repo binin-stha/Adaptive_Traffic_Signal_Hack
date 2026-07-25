@@ -1,4 +1,4 @@
-"""Setup view — top-down intersection layout using native Streamlit widgets only."""
+"""Setup view — top-down intersection layout, Art Deco styling."""
 
 from typing import List
 
@@ -8,10 +8,15 @@ import streamlit as st
 from config.constants import DIRECTIONS, DIR_META
 from ui.annotation_panel import annotation_panel
 
+C = {
+    "bg": "#0A0A0A", "surface": "#141414",
+    "border": "rgba(212, 175, 55, 0.3)", "border-h": "#D4AF37",
+    "text": "#F2F0E4", "text-dim": "#888888", "text-faint": "#5C5C5C",
+    "gold": "#D4AF37", "gold-light": "#F2E8C4",
+}
+F_DISPLAY = "'Marcellus', serif"
+F_BODY = "'Josefin Sans', sans-serif"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STATE HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _get_active() -> List[str]:
     if "active_directions" not in st.session_state:
@@ -32,12 +37,16 @@ def _signal_state(d: str) -> str:
     return st.session_state.get("signal_state", {}).get(d, "red")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CELLS (native widgets — no HTML)
-# ─────────────────────────────────────────────────────────────────────────────
+def _corner_accents() -> str:
+    return (
+        f'<div style="position:absolute;top:4px;left:4px;width:8px;height:8px;'
+        f'border-top:1px solid {C["gold"]};border-left:1px solid {C["gold"]};"></div>'
+        f'<div style="position:absolute;bottom:4px;right:4px;width:8px;height:8px;'
+        f'border-bottom:1px solid {C["gold"]};border-right:1px solid {C["gold"]};"></div>'
+    )
+
 
 def _direction_cell(d: str) -> None:
-    """One road approach as a native bordered card."""
     meta = DIR_META[d]
     cfg = st.session_state.config[d]
     active = d in _get_active()
@@ -45,82 +54,85 @@ def _direction_cell(d: str) -> None:
     sig = _signal_state(d)
 
     with st.container(border=True):
-        # Title
-        st.markdown(f"### {meta['arrow']}  {meta['label']}")
+        st.markdown(
+            f'<div style="position:relative;padding:6px 4px 10px;">'
+            f'{_corner_accents()}'
+            f'<div style="font-family:{F_DISPLAY};font-size:20px;letter-spacing:0.18em;color:{C["text"]};">'
+            f'{meta["arrow"]} {meta["label"]}</div>'
+            f'<div style="font-family:{F_BODY};font-size:10px;color:{C["text-dim"]};text-transform:uppercase;'
+            f'letter-spacing:0.12em;margin-top:5px;">'
+            f'{"● ACTIVE" if active else "○ DISABLED"} · SIGNAL {sig.upper()}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
-        # Media + annotation status
         if cfg["frame"] is not None:
             kind = (cfg["media_type"] or "media").upper()
             n_lanes = len([s for s in cfg["shapes"] if s["label"] == "lane"])
             has_xing = any(s["label"] == "zebra_crossing" for s in cfg["shapes"])
-            st.caption(
-                f"{kind} uploaded  ·  {n_lanes} lane(s)  ·  "
-                f"{'crossing drawn' if has_xing else 'no crossing'}"
-            )
+            st.caption(f"{kind} · {n_lanes} LANE(S) · {'CROSSING' if has_xing else 'NO CROSSING'}")
         else:
-            st.caption("No video — upload to begin")
+            st.caption("AWAITING MEDIA")
 
-        # Signal + active state
-        st.caption(
-            f"Signal: **{sig.upper()}**  ·  "
-            f"{'ACTIVE' if active else 'disabled'}"
-        )
-
-        # Thumbnail
         if cfg["frame"] is not None:
             h, w = cfg["frame"].shape[:2]
             thumb = cv2.resize(cfg["frame"], (max(int(w * 90 / h), 1), 90))
-            st.image(cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB), use_column_width=True)
+            st.image(cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB), width="stretch")
 
-        # Controls
         b1, b2 = st.columns(2)
         with b1:
-            if st.button(
-                "● Annotating" if selected else "Annotate",
-                key=f"anno_{d}",
-                use_container_width=True,
-                type="primary" if selected else "secondary",
-            ):
+            if st.button("◆ OPEN" if selected else "◆ ANNOTATE", key=f"anno_{d}",
+                         use_container_width=True, type="primary" if selected else "secondary"):
                 st.session_state.annotate_dir = d
                 st.rerun()
         with b2:
-            if st.button(
-                "Disable" if active else "Enable",
-                key=f"act_{d}",
-                use_container_width=True,
-            ):
+            if st.button("DISABLE" if active else "ENABLE", key=f"act_{d}",
+                         use_container_width=True):
                 _toggle_direction(d)
                 st.rerun()
 
 
 def _center_cell() -> None:
-    """The intersection core."""
     with st.container(border=True):
-        st.markdown("### ⬤  JUNCTION")
-        st.caption("Signalized intersection core")
-        st.caption("Adaptive signal control")
-        st.caption("Draw crossings on each approach")
+        st.markdown(
+            f'<div style="position:relative;text-align:center;padding:26px 8px;">'
+            f'{_corner_accents()}'
+            f'<div style="width:14px;height:14px;transform:rotate(45deg);border:2px solid {C["gold"]};'
+            f'margin:0 auto 12px;box-shadow:0 0 12px {C["gold"]};"></div>'
+            f'<div style="font-family:{F_DISPLAY};font-size:18px;letter-spacing:0.2em;color:{C["gold"]};">JUNCTION</div>'
+            f'<div style="font-family:{F_BODY};font-size:10px;color:{C["text-dim"]};text-transform:uppercase;'
+            f'letter-spacing:0.12em;margin-top:6px;">Signalized Core · Adaptive</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def _corner_cell() -> None:
-    """Empty corner spacer."""
-    st.markdown(" ")
+    st.markdown(
+        f'<div style="height:60px;background:repeating-linear-gradient(45deg,{C["surface"]} 0 1px,transparent 1px 9px);'
+        f'border:1px solid rgba(212,175,55,0.12);"></div>',
+        unsafe_allow_html=True,
+    )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────────────────────────────────────
 
 def setup_view() -> None:
     active = _get_active()
 
-    st.markdown("## Intersection Setup")
-    st.caption(
-        f"Top-down layout  ·  configured as a **{len(active)}-way intersection**  ·  "
-        f"active: {', '.join(d.upper() for d in active) if active else 'none'}"
+    st.markdown(
+        f'''
+        <div style="padding:24px 32px;margin-bottom:8px;background:{C["surface"]};
+                    border:1px solid {C["border-h"]};position:relative;">
+          <div style="position:absolute;top:4px;left:4px;width:12px;height:12px;border-top:1px solid {C["gold"]};border-left:1px solid {C["gold"]};"></div>
+          <div style="position:absolute;bottom:4px;right:4px;width:12px;height:12px;border-bottom:1px solid {C["gold"]};border-right:1px solid {C["gold"]};"></div>
+          <div style="font-family:{F_DISPLAY};font-size:28px;letter-spacing:0.2em;color:{C["gold"]};">INTERSECTION SETUP</div>
+          <div style="font-family:{F_BODY};font-size:12px;color:{C["text-dim"]};text-transform:uppercase;letter-spacing:0.15em;margin-top:6px;">
+            Top-down survey · {len(active)}-way junction · active: {', '.join(d.upper() for d in active) if active else 'none'}
+          </div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
     )
 
-    # ── Top-down 3×3 grid ─────────────────────────────────────────────────
     r0a, r0b, r0c = st.columns([1, 1.6, 1])
     r1a, r1b, r1c = st.columns([1, 1.6, 1])
     r2a, r2b, r2c = st.columns([1, 1.6, 1])
@@ -128,19 +140,22 @@ def setup_view() -> None:
     with r0a: _corner_cell()
     with r0b: _direction_cell("north")
     with r0c: _corner_cell()
-
     with r1a: _direction_cell("west")
     with r1b: _center_cell()
     with r1c: _direction_cell("east")
-
     with r2a: _corner_cell()
     with r2b: _direction_cell("south")
     with r2c: _corner_cell()
 
-    # ── Annotation panel for the selected approach ────────────────────────
     selected = st.session_state.get("annotate_dir")
     if selected:
-        st.markdown("---")
+        st.markdown(f'<div style="height:1px;border-top:2px double {C["border"]};margin:28px 0;"></div>',
+                    unsafe_allow_html=True)
         annotation_panel(selected)
     else:
-        st.info("Click 'Annotate' on an approach above to draw its lanes, crossing, and lines.")
+        st.markdown(
+            f'<div style="font-family:{F_DISPLAY};font-size:13px;letter-spacing:0.15em;color:{C["gold"]};'
+            f'text-align:center;padding:24px;background:{C["surface"]};border:1px dashed {C["border-h"]};margin-top:16px;">'
+            f'SELECT A SECTOR TO BEGIN ANNOTATION</div>',
+            unsafe_allow_html=True,
+        )

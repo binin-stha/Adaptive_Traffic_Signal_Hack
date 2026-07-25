@@ -13,16 +13,29 @@ from PIL import Image
 
 from config.constants import DIRECTIONS, DIR_COLORS, CANVAS_HEIGHT
 from visualization.annotate import annotate_frame
-from video.multi_processor import cleanup_multi_processor
-from models.detector import reset_tracking
+from video import live_stream as ls
+
+# ── Design tokens (Art Deco Luxury Palette) ───────
+C = {
+    "bg":        "#0A0A0A", # Obsidian Black
+    "surface":   "#141414", # Rich Charcoal
+    "border":    "rgba(212, 175, 55, 0.3)", # Faint Gold
+    "border-h":  "#D4AF37", # Solid Gold
+    "text":      "#F2F0E4", # Champagne Cream
+    "text-dim":  "#888888", # Pewter
+    "text-faint":"#5C5C5C", # Darker Pewter
+    "gold":      "#D4AF37", # Metallic Gold
+}
+F_DISPLAY = "'Marcellus', serif"
+F_BODY = "'Josefin Sans', sans-serif"
 
 
 def _invalidate_control_room() -> None:
-    """Drop cached frames/tracks so the control room rebuilds from fresh media."""
-    cleanup_multi_processor()
-    reset_tracking()
-    st.session_state.pop("last_result", None)
-    st.session_state.pop("cr_dirs", None)
+    """Stop live streams so the control room picks up freshly uploaded media."""
+    ls.stop_all()
+    ls.clear_state()
+    st.session_state.pop("decision_flow", None)
+    st.session_state.pop("_last_decision_t", None)
     st.session_state.live = False
 
 
@@ -40,7 +53,7 @@ def draw_shape_tool(
         width=width,
         height=height,
         mode=mode,
-        accent=accent,
+        accent=C["gold"], # Override standard accent with Gatsby Gold
         key=key,
         default=None,
     )
@@ -54,10 +67,20 @@ def _frame_to_b64(frame: np.ndarray, disp_w: int, disp_h: int) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def _section_label(text: str) -> None:
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:10px;margin:24px 0 12px;border-bottom:1px solid {C["border"]};padding-bottom:6px;">'
+        f'<span style="width:6px;height:6px;transform:rotate(45deg);background:{C["gold"]};"></span>'
+        f'<span style="font-family:{F_DISPLAY};font-size:14px;font-weight:400;letter-spacing:0.15em;'
+        f'text-transform:uppercase;color:{C["gold"]};">{text}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
 # ── Vertex editor (adjust saved shapes) ───────────────────────────────────────
 def vertex_editor(direction: str, idx: int, shape: Dict[str, Any]) -> None:
     pts = shape["points"]
-    with st.expander(f"Edit vertices — {shape['label']} #{idx + 1}", expanded=False):
+    with st.expander(f"Edit Vertices — {shape['label'].upper()} I.{idx + 1}", expanded=False):
         new_pts: List[Tuple[float, float]] = []
         for i in range(0, len(pts), 4):
             cols = st.columns(4)
@@ -76,12 +99,12 @@ def vertex_editor(direction: str, idx: int, shape: Dict[str, Any]) -> None:
 
         b1, b2 = st.columns(2)
         with b1:
-            if st.button("Apply changes", key=f"applyv_{direction}_{idx}",
+            if st.button("◆ APPLY ALTERATIONS", key=f"applyv_{direction}_{idx}",
                          use_container_width=True):
                 st.session_state.config[direction]["shapes"][idx]["points"] = new_pts
                 st.rerun()
         with b2:
-            if st.button("Delete shape", key=f"delv_{direction}_{idx}",
+            if st.button("◇ PURGE SHAPE", key=f"delv_{direction}_{idx}",
                          use_container_width=True):
                 st.session_state.config[direction]["shapes"].pop(idx)
                 st.rerun()
@@ -90,14 +113,29 @@ def vertex_editor(direction: str, idx: int, shape: Dict[str, Any]) -> None:
 # ── Main panel ────────────────────────────────────────────────────────────────
 def annotation_panel(direction: str) -> None:
     cfg = st.session_state.config[direction]
-    accent = DIR_COLORS[direction]
 
-    st.markdown(f"### {direction.upper()} approach")
-    st.caption("Upload a frame, draw with the pen tool, press Save — the shape is committed instantly.")
+    # ── Art Deco Header ───────────────────────────────────────────────────
+    st.markdown(
+        f'''
+        <div style="padding:18px 24px;margin-bottom:20px;
+                    background:{C["surface"]};border:1px solid {C["border-h"]};
+                    border-radius:0px;position:relative;">
+          <div style="position:absolute;top:4px;left:4px;width:8px;height:8px;border-top:1px solid {C["gold"]};border-left:1px solid {C["gold"]};"></div>
+          <div style="position:absolute;bottom:4px;right:4px;width:8px;height:8px;border-bottom:1px solid {C["gold"]};border-right:1px solid {C["gold"]};"></div>
+          <div style="font-family:{F_DISPLAY};font-size:22px;font-weight:400;letter-spacing:0.2em;
+                      color:{C["text"]};">{direction.upper()} <span style="color:{C["gold"]};
+                      font-size:16px;letter-spacing:0.1em;">SECTOR</span></div>
+          <div style="font-family:{F_BODY};font-size:11px;color:{C["text-dim"]};margin-top:6px;text-transform:uppercase;letter-spacing:0.1em;">
+            Upload blueprint media, sketch vectors, and commit.
+          </div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
 
     # ── Upload (re-decode only when the file actually changes) ─────────────
     uploaded = st.file_uploader(
-        f"Upload image or video — {direction.title()}",
+        f"Transmit visual data — {direction.title()}",
         type=["jpg", "jpeg", "png", "mp4", "mov", "avi"],
         key=f"upload_{direction}",
     )
@@ -127,7 +165,7 @@ def annotation_panel(direction: str) -> None:
                     cfg["media_bytes"] = uploaded.getbuffer()
 
             if decoded is None:
-                st.error("Could not read this file — try a different image or video.")
+                st.error("Could not decipher media payload.")
                 cfg["frame"] = None
             else:
                 cfg["frame"] = decoded
@@ -136,22 +174,24 @@ def annotation_panel(direction: str) -> None:
     # ── Always read the persisted frame and guard before use ───────────────
     frame = cfg.get("frame")
     if frame is None:
-        st.info("Upload media to begin drawing.")
+        st.info("Awaiting optical input to commence mapping.")
         return
 
-    # ── Compute display scale (this block was missing) ─────────────────────
+    # ── Compute display scale ─────────────────────
     h, w = frame.shape[:2]
     scale = CANVAS_HEIGHT / h
     cfg["scale"] = scale
     disp_w, disp_h = int(w * scale), CANVAS_HEIGHT
 
     # ── Tool selection ─────────────────────────────────────────────────────
+    _section_label("DRAFTING IMPLEMENT")
     draw_choice = st.radio(
         "Annotation tool",
         ["Lane (polygon)", "Zebra crossing (polygon)",
          "Stop line (line — 2 pts)", "Count line (line — 2 pts)"],
         key=f"drawmode_{direction}",
         horizontal=True,
+        label_visibility="collapsed",
     )
     if "Lane" in draw_choice:
         shape_label, draw_mode = "lane", "polygon"
@@ -166,29 +206,31 @@ def annotation_panel(direction: str) -> None:
     lane_id = side = travel = None
     is_focus = False
     if shape_label == "lane":
+        _section_label("VECTOR METADATA")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             lane_id = st.text_input(
-                "Lane ID",
+                "LANE DESIGNATION",
                 value=f"{direction}_lane_{len([s for s in cfg['shapes'] if s['label']=='lane']) + 1}",
                 key=f"laneid_{direction}")
         with c2:
-            side = st.selectbox("Side", DIRECTIONS, index=DIRECTIONS.index(direction),
+            side = st.selectbox("CARDINAL SIDE", DIRECTIONS, index=DIRECTIONS.index(direction),
                                 key=f"side_{direction}")
         with c3:
-            travel = st.selectbox("Travel", ["incoming", "outgoing"],
+            travel = st.selectbox("VECTOR FLOW", ["incoming", "outgoing"],
                                   key=f"travel_{direction}")
         with c4:
-            is_focus = st.checkbox("Focus lane", value=True, key=f"focus_{direction}")
+            is_focus = st.checkbox("PRIMARY FOCUS", value=True, key=f"focus_{direction}")
 
     # ── The pen-tool canvas (one-click save) ──────────────────────────────
+    _section_label("SCHEMATIC CANVAS")
     image_b64 = _frame_to_b64(frame, disp_w, disp_h)
     result = draw_shape_tool(
         image_b64=image_b64,
         width=disp_w,
         height=disp_h,
         mode=draw_mode,
-        accent=accent,
+        accent=C["gold"],
         key=f"tool_{direction}_{shape_label}",
     )
 
@@ -210,32 +252,48 @@ def annotation_panel(direction: str) -> None:
                         "focus": is_focus,
                     })
                 cfg["shapes"].append(entry)
-                st.success(f"Saved {shape_label} with {len(original_pts)} points.")
+                st.success(f"Archived {shape_label} comprising {len(original_pts)} nodes.")
 
     # ── Saved shapes + editor ─────────────────────────────────────────────
-    st.markdown("#### Saved shapes")
+    _section_label(f"STORED TOPOLOGY · {len(cfg['shapes'])}")
     if not cfg["shapes"]:
-        st.caption("No shapes yet — draw on the image above and press Save.")
+        st.markdown(
+            f'<div style="font-family:{F_DISPLAY};font-size:12px;letter-spacing:0.15em;color:{C["gold"]};'
+            f'padding:20px;text-align:center;background:{C["surface"]};border:1px dashed {C["border-h"]};border-radius:0px;">'
+            f'NO TOPOLOGICAL VECTORS DEFINED</div>',
+            unsafe_allow_html=True,
+        )
     else:
         for i, s in enumerate(cfg["shapes"]):
             if s["label"] == "lane":
-                desc = (f"{s.get('id','?')} — {s.get('side','?')}/{s.get('travel','?')}"
-                        f"{'  [FOCUS]' if s.get('focus') else ''}")
+                desc = (f"{s.get('id','?')} · {s.get('side','?')}/{s.get('travel','?')}"
+                        f"{'  [FOCAL]' if s.get('focus') else ''}")
             elif s["label"] == "zebra_crossing":
-                desc = f"Zebra crossing ({len(s['points'])} pts)"
+                desc = f"ZEBRA CROSSING ({len(s['points'])} NODES)"
             elif s["label"] == "stop_line":
-                desc = "Stop line"
+                desc = "ARREST LINE"
             elif s["label"] == "count_line":
-                desc = "Count line"
+                desc = "ENUMERATION LINE"
             else:
-                desc = s["label"]
-            st.markdown(f"**{i + 1}.** {desc}")
+                desc = s["label"].replace("_", " ").upper()
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;'
+                f'margin-bottom:6px;background:{C["surface"]};border:1px solid {C["border"]};'
+                f'border-radius:0px;">'
+                f'<span style="font-family:{F_DISPLAY};font-size:14px;color:{C["gold"]};'
+                f'min-width:24px;">I.{i + 1:02d}</span>'
+                f'<span style="width:6px;height:6px;transform:rotate(45deg);background:{C["gold"]};'
+                f'flex:none;"></span>'
+                f'<span style="font-family:{F_BODY};font-size:12px;color:{C["text"]};letter-spacing:0.1em;">{desc}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
             vertex_editor(direction, i, s)
 
     # ── Preview overlay ───────────────────────────────────────────────────
     if cfg["shapes"]:
-        st.markdown("#### Annotation preview")
+        _section_label("COMPOSITE PREVIEW")
         preview = annotate_frame(frame, [], cfg["shapes"])
         st.image(cv2.cvtColor(preview, cv2.COLOR_BGR2RGB),
-                 caption=f"{direction.upper()} — all saved annotations",
-                 use_column_width=True)
+                 caption=f"{direction.upper()} OVERLAY",
+                 width="stretch")

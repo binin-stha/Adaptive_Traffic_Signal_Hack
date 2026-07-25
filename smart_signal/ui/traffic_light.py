@@ -1,11 +1,12 @@
-"""Reusable traffic-signal renderer (3-lamp housing with glow + yellow phase)."""
+"""Reusable traffic-signal renderer (Art Deco housing with glowing lamps)."""
 
+# Colors defined as: (bright_center, main_glow, off_base, off_shadow)
+# Adapted to Gatsby aesthetic: Ruby Red, Golden Amber, Emerald Green
 SIGNAL_COLORS = {
-    "red":    ("#FF453A", "#2E1414"),
-    "yellow": ("#FFD60A", "#2E2A12"),
-    "green":  ("#30D158", "#12301C"),
+    "red":    ("#FF6B6B", "#D32F2F", "#2D0A0A", "#140505"), # Ruby
+    "yellow": ("#FFDF00", "#D4AF37", "#332700", "#1A1400"), # Amber/Gold
+    "green":  ("#50C878", "#008A4A", "#042110", "#020A05"), # Emerald
 }
-
 
 def effective_lamp(state: str, remaining: float = None) -> str:
     """Green flips to yellow in the last 3 seconds before a phase change."""
@@ -13,35 +14,66 @@ def effective_lamp(state: str, remaining: float = None) -> str:
         return "yellow"
     return state if state in SIGNAL_COLORS else "red"
 
-
 def traffic_light_html(state: str, scale: float = 1.0, horizontal: bool = False) -> str:
-    """Return HTML for a signal housing with the active lamp lit and glowing."""
+    """Return HTML for a geometric Art Deco signal housing with vintage incandescent glow."""
     state = state if state in SIGNAL_COLORS else "red"
-    lamp = int(15 * scale)
-    gap = int(5 * scale)
-    pad = int(6 * scale)
-    radius = int(9 * scale)
+    
+    # Calibrated base dimensions
+    lamp = int(18 * scale)
+    gap = int(10 * scale)
+    pad = int(12 * scale)
+    border_w = max(1, int(1.5 * scale))
 
     lamps_html = ""
     for name in ("red", "yellow", "green"):
         on = name == state
-        color = SIGNAL_COLORS[name][0] if on else SIGNAL_COLORS[name][1]
+        bright, main, off_base, off_dark = SIGNAL_COLORS[name]
+        
         if on:
-            glow = (f"box-shadow:0 0 {int(11*scale)}px {int(2*scale)}px "
-                    f"{SIGNAL_COLORS[name][0]}99, inset 0 0 {int(4*scale)}px #ffffff55;")
+            # Art Deco glass glow: intense warm core, rich saturated halo
+            bg = f"radial-gradient(circle at 50% 50%, {bright} 10%, {main} 60%, {off_dark} 100%)"
+            glow = (
+                f"box-shadow: "
+                f"0 0 {int(12*scale)}px {int(2*scale)}px {main}AA, "
+                f"0 0 {int(25*scale)}px {int(6*scale)}px {main}55, "
+                f"inset 0 0 {int(4*scale)}px rgba(0,0,0,0.6);"
+            )
         else:
-            glow = f"box-shadow:inset 0 0 {int(4*scale)}px #000000aa;"
+            # Inactive dark jewel tone
+            bg = f"linear-gradient(135deg, {off_base} 0%, {off_dark} 100%)"
+            glow = (
+                f"box-shadow: "
+                f"inset 0 {int(3*scale)}px {int(6*scale)}px rgba(0,0,0,0.8), "
+                f"0 {int(1*scale)}px 0px rgba(212,175,55,0.15);"
+            )
+
         lamps_html += (
-            f'<div style="width:{lamp}px;height:{lamp}px;border-radius:50%;'
-            f'background:radial-gradient(circle at 35% 30%, {color}, {color} 55%, #00000066);'
-            f'{glow}transition:all .35s ease;"></div>'
+            f'<div style="width:{lamp}px; height:{lamp}px; border-radius:50%; '
+            f'background:{bg}; {glow} '
+            f'border: {border_w}px solid #D4AF37; '
+            f'position: relative; '
+            f'transition: background 0.2s ease, box-shadow 0.2s ease;">'
+            f'</div>'
         )
 
     direction = "row" if horizontal else "column"
+    
+    # Geometric, sharp brass-and-obsidian casing
     return (
-        f'<div style="display:flex;flex-direction:{direction};gap:{gap}px;'
-        f'padding:{pad}px;background:linear-gradient(180deg,#1B212B,#0C1015);'
-        f'border:1px solid #2C3542;border-radius:{radius}px;'
-        f'box-shadow:0 4px 14px #00000077, inset 0 1px 0 #ffffff10;">'
-        f'{lamps_html}</div>'
+        f'<div style="display:inline-flex; flex-direction:{direction}; gap:{gap}px; '
+        f'padding:{pad}px; '
+        f'background: #141414; '
+        f'border: {border_w}px solid #D4AF37; '
+        f'border-radius: 0px; ' # Strict geometry
+        f'position: relative; '
+        f'box-shadow: 0 4px 15px rgba(212,175,55,0.15), inset 0 0 10px rgba(0,0,0,0.8);">'
+        
+        # Subtle deco corner accents
+        f'<div style="position:absolute; top:2px; left:2px; width:4px; height:4px; background:#D4AF37;"></div>'
+        f'<div style="position:absolute; bottom:2px; left:2px; width:4px; height:4px; background:#D4AF37;"></div>'
+        f'<div style="position:absolute; top:2px; right:2px; width:4px; height:4px; background:#D4AF37;"></div>'
+        f'<div style="position:absolute; bottom:2px; right:2px; width:4px; height:4px; background:#D4AF37;"></div>'
+        
+        f'{lamps_html}'
+        f'</div>'
     )

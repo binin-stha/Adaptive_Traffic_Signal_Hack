@@ -1,175 +1,212 @@
-"""Transparent decision engine — full step-by-step reasoning chain."""
+"""Rule-based signal decision engine.
 
-from typing import Any, Dict, List, Optional
+The junction is two competing AXES:
+    NS = north + south   (opposing directions share one signal)
+    EW = east  + west    (opposing directions share one signal)
+The two axes cross inside the junction, so they are mutually exclusive —
+exactly one axis is ever green.
 
-from config.constants import (
-    DIRECTIONS, WEIGHTS, BASE_TIME, MIN_GREEN, MAX_GREEN, MAX_WAIT,
-)
+Priority rules, evaluated in this exact order:
+  1. Starvation guard       — a side waiting > MAX_WAIT is forced green.
+  2. Congestion fairness    — both sides >= HIGH_THRESHOLD: rotate on MAX_HOLD_TIME.
+  3. Low-traffic fast-track — a side <= LOW_THRESHOLD with fewer vehicles clears first.
+  4. Default                — the side with fewer vehicles goes first.
+"""
+
+from typing import Any, Dict, List
+
+LOW_THRESHOLD   = 5
+HIGH_THRESHOLD  = 15
+MAX_HOLD_TIME   = 40
+MAX_WAIT        = 90
+
+AXES = {"NS": ["north", "south"], "EW": ["east", "west"]}
+AXIS_LABEL = {"NS": "NORTH–SOUTH", "EW": "EAST–WEST"}
+# Crossing axes — giving one green necessarily locks the other.
+AXIS_CONFLICTS = {"NS": "EW", "EW": "NS"}
+
+
+def decide_green(counts: dict, wait_time: dict, current_green: str, green_held_for: int) -> str:
+    """
+    counts[d]       = vehicle count on direction d
+    wait_time[d]    = seconds since d last had green
+    current_green   = direction currently green
+    green_held_for  = seconds current_green has been green
+    returns: direction that should be green next
+    """
+    # 1. Starvation — a side waiting too long is forced green no matter what
+    for d, w in wait_time.items():
+        if w > MAX_WAIT:
+            return d
+
+    a, b = counts.keys()  # two directions being compared
+
+    # 2. Both sides congested -> ignore counts, use time-based fairness only
+    if counts[a] >= HIGH_THRESHOLD and counts[b] >= HIGH_THRESHOLD:
+        if green_held_for >= MAX_HOLD_TIME:
+            return b if current_green == a else a   # force switch
+        return current_green                          # still within its turn, keep it
+
+    # 3. One side clearly light -> clear it first regardless of the other side's count
+    if counts[a] <= LOW_THRESHOLD and counts[a] < counts[b]:
+        return a
+    if counts[b] <= LOW_THRESHOLD and counts[b] < counts[a]:
+        return b
+
+    # 4. Default — lower count goes first (assumption: clears the junction faster)
+    return a if counts[a] <= counts[b] else b
+
+
+def _which_rule(counts, wait_time, current_green, green_held_for):
+    """Mirror decide_green to report WHICH rule fired (for the reasoning chain)."""
+    for d, w in wait_time.items():
+        if w > MAX_WAIT:
+            return "STARVATION GUARD", f"{AXIS_LABEL[d]} waited {w:.0f}s (> {MAX_WAIT}s) — forced green"
+    a, b = counts.keys()
+    if counts[a] >= HIGH_THRESHOLD and counts[b] >= HIGH_THRESHOLD:
+        if green_held_for >= MAX_HOLD_TIME:
+            other = b if current_green == a else a
+            return "CONGESTION ROTATE", f"both axes ≥ {HIGH_THRESHOLD}, held {green_held_for:.0f}s — rotate to {AXIS_LABEL[other]}"
+        return "CONGESTION HOLD", f"both axes ≥ {HIGH_THRESHOLD}, held {green_held_for:.0f}s < {MAX_HOLD_TIME}s — keep {AXIS_LABEL[current_green]}"
+    if counts[a] <= LOW_THRESHOLD and counts[a] < counts[b]:
+        return "LOW-TRAFFIC FAST-TRACK", f"{AXIS_LABEL[a]} ≤ {LOW_THRESHOLD} & fewer — clear it first"
+    if counts[b] <= LOW_THRESHOLD and counts[b] < counts[a]:
+        return "LOW-TRAFFIC FAST-TRACK", f"{AXIS_LABEL[b]} ≤ {LOW_THRESHOLD} & fewer — clear it first"
+    winner = a if counts[a] <= counts[b] else b
+    loser = b if winner == a else a
+    return "DEFAULT — CLEAR FASTEST", f"{AXIS_LABEL[winner]} has fewer ({counts[winner]} vs {counts[loser]}) — goes first"
 
 
 class DecisionFlow:
-    """Produces a fully auditable, step-by-step signal decision every tick.
-
-    Mirrors how a traffic officer reasons:
-    see the traffic -> weigh the load -> check who has waited too long
-    -> protect crossing pedestrians -> pick a direction -> justify it.
-    """
+    """Drives the junction by running decide_green on the NS vs EW axis counts."""
 
     def __init__(self):
-        self.current_green: Optional[str] = None
-        self.green_remaining: float = 0.0
-        self.wait_times: Dict[str, float] = {d: 0.0 for d in DIRECTIONS}
+        self.current_axis = None
+        self.green_held_for = 0.0
+        self.axis_wait = {ax: 0.0 for ax in AXES}
         self.decision_log: List[Dict[str, Any]] = []
-        self.total_elapsed: float = 0.0
+        self.total_elapsed = 0.0
+        self.last_rule = ""
+        self.last_reason = ""
 
-    def evaluate(
-        self,
-        counts_by_dir: Dict[str, Dict[str, Any]],
-        dt: float,
-        force: bool = False,
-    ) -> Dict[str, Any]:
-        """Run the full reasoning chain. Returns steps + decision + state."""
+    def _switch(self, axis, rule, reason):
+        prev = self.current_axis
+        self.current_axis = axis
+        self.green_held_for = 0.0
+        self.axis_wait[axis] = 0.0
+        self.last_rule, self.last_reason = rule, reason
+        self.decision_log.append({
+            "time": round(self.total_elapsed, 1),
+            "from": prev, "to": axis, "rule": rule, "reason": reason,
+        })
+        self.decision_log = self.decision_log[-40:]
 
+    # ── signal mapping + safety invariant ─────────────────────────────────
+    def _signal_state(self) -> Dict[str, str]:
+        """Opposing directions share one signal; the crossing axis is locked red."""
+        state = {
+            d: ("green" if ax == self.current_axis else "red")
+            for ax, dirs in AXES.items() for d in dirs
+        }
+        return self._enforce_conflict_lock(state)
+
+    def _enforce_conflict_lock(self, state: Dict[str, str]) -> Dict[str, str]:
+        """Hard invariant: the two crossing axes are NEVER green at the same time.
+
+        The axis model already guarantees this, but we clamp defensively so a
+        conflicting state can never reach the lamps no matter how it arose.
+        """
+        green_axes = {
+            ax for ax, dirs in AXES.items()
+            if any(state.get(d) == "green" for d in dirs)
+        }
+        if len(green_axes) > 1:
+            for ax, dirs in AXES.items():
+                if ax != self.current_axis:
+                    for d in dirs:
+                        state[d] = "red"
+        return state
+
+    def evaluate(self, counts_by_dir, dt, force=False):
         self.total_elapsed += dt
+        self.green_held_for += dt
 
-        # Red directions accumulate wait; green direction's wait resets.
-        for d in DIRECTIONS:
-            if d == self.current_green:
-                self.wait_times[d] = 0.0
-            elif d in counts_by_dir:
-                self.wait_times[d] += dt
-
-        steps: List[Dict[str, Any]] = []
-
-        # ── STEP 1 · PERCEPTION ───────────────────────────────────────────
-        perception = {
-            d: {
-                "vehicles": c["vehicle"],
-                "waiting_vehicles": c["waiting_vehicles"],
-                "pedestrians": c["pedestrian"],
-                "waiting_peds": c["waiting_pedestrians"],
-                "crossing_peds": c["crossing_pedestrians"],
-            }
-            for d, c in counts_by_dir.items()
+        # aggregate vehicle counts per axis (opposing lanes summed together)
+        axis_counts = {
+            ax: sum(counts_by_dir.get(d, {}).get("vehicle", 0) for d in dirs)
+            for ax, dirs in AXES.items()
         }
-        steps.append({"name": "PERCEPTION", "detail": perception})
 
-        # ── STEP 2 · WEIGHTED LOAD ────────────────────────────────────────
-        loads = {
-            d: c["vehicle"] * WEIGHTS["vehicle"]
-            + c["pedestrian"] * WEIGHTS["pedestrian"]
-            for d, c in counts_by_dir.items()
-        }
-        steps.append({
-            "name": "WEIGHTED LOAD",
-            "formula": "vehicles×1.5 + pedestrians×1.2",
-            "detail": {d: round(loads.get(d, 0.0), 1) for d in DIRECTIONS},
-        })
-
-        # ── STEP 3 · STARVATION CHECK ─────────────────────────────────────
-        starved = [
-            d for d in DIRECTIONS
-            if d in counts_by_dir and self.wait_times.get(d, 0.0) > MAX_WAIT
-        ]
-        steps.append({
-            "name": "STARVATION CHECK",
-            "threshold": MAX_WAIT,
-            "detail": {d: round(self.wait_times.get(d, 0.0), 1) for d in DIRECTIONS},
-            "alert": starved,
-        })
-
-        # ── STEP 4 · PEDESTRIAN SAFETY ────────────────────────────────────
-        crossing_now = [
-            d for d, c in counts_by_dir.items() if c["crossing_pedestrians"] > 0
-        ]
-        steps.append({
-            "name": "PEDESTRIAN SAFETY",
-            "detail": {
-                d: counts_by_dir[d]["crossing_pedestrians"] for d in counts_by_dir
-            },
-            "alert": crossing_now,
-        })
-
-        # ── STEP 5 · DECISION ─────────────────────────────────────────────
-        self.green_remaining -= dt
-
-        need_decision = (
-            force
-            or self.current_green is None
-            or self.green_remaining <= 0
-            or (starved and self.current_green not in starved)
-        )
-
-        if need_decision:
-            if starved:
-                nxt = max(starved, key=lambda d: self.wait_times.get(d, 0.0))
-                reason = (
-                    f"STARVATION GUARD — {nxt.upper()} waited "
-                    f"{self.wait_times[nxt]:.0f}s (> {MAX_WAIT}s)"
-                )
-                green_time = float(MAX_GREEN)
+        # red axis accumulates wait; the green axis resets
+        for ax in AXES:
+            if ax == self.current_axis:
+                self.axis_wait[ax] = 0.0
             else:
-                candidates = [d for d in counts_by_dir if loads.get(d, 0.0) > 0]
-                if not candidates:
-                    nxt = self.current_green or DIRECTIONS[0]
-                    reason = "No demand detected — holding current phase"
-                    green_time = float(MIN_GREEN)
-                else:
-                    nxt = max(candidates, key=lambda d: loads.get(d, 0.0))
-                    total_load = sum(loads.values()) or 1.0
-                    share = BASE_TIME + (loads[nxt] / total_load) * (MAX_GREEN - BASE_TIME)
-                    green_time = float(max(MIN_GREEN, min(MAX_GREEN, round(share))))
-                    reason = f"Highest weighted load ({loads[nxt]:.1f})"
+                self.axis_wait[ax] += dt
 
-            # SAFETY HOLD: never cut off a direction while its pedestrians
-            # are mid-crossing — extend until they clear.
-            if (
-                self.current_green
-                and self.current_green in crossing_now
-                and nxt != self.current_green
-            ):
-                nxt = self.current_green
-                reason = (
-                    f"HOLDING — pedestrians still crossing at "
-                    f"{self.current_green.upper()}"
+        # pedestrian crossings per axis (safety overlay)
+        crossing_axes = set()
+        for d, c in counts_by_dir.items():
+            if c.get("crossing_pedestrians", 0) > 0:
+                for ax, dirs in AXES.items():
+                    if d in dirs:
+                        crossing_axes.add(ax)
+
+        # ── run the rules ─────────────────────────────────────────────────
+        else:
+            nxt = decide_green(axis_counts, self.axis_wait, self.current_axis, self.green_held_for)
+            rule, reason = _which_rule(axis_counts, self.axis_wait, self.current_axis, self.green_held_for)
+
+            # HARD CAP — no axis may hold green beyond MAX_HOLD_TIME; force rotation
+            if self.green_held_for >= MAX_HOLD_TIME:
+                other = AXIS_CONFLICTS[self.current_axis]
+                nxt = other
+                rule, reason = "MAX HOLD REACHED", (
+                    f"{AXIS_LABEL[self.current_axis]} held {self.green_held_for:.0f}s "
+                    f"(≥ {MAX_HOLD_TIME}s) — rotate to {AXIS_LABEL[other]}"
                 )
-                green_time = max(self.green_remaining, 5.0)
 
-            prev = self.current_green
-            self.current_green = nxt
-            self.green_remaining = green_time
-            self.wait_times[nxt] = 0.0
+            # SAFETY — never cut off an axis while its pedestrians are mid-crossing
+            if self.current_axis in crossing_axes and nxt != self.current_axis:
+                nxt = self.current_axis
+                rule, reason = "PEDESTRIAN HOLD", f"pedestrians crossing on {AXIS_LABEL[self.current_axis]} — hold green"
 
-            self.decision_log.append({
-                "time": round(self.total_elapsed, 1),
-                "from": prev,
-                "to": nxt,
-                "reason": reason,
-                "green_time": green_time,
-            })
-            self.decision_log = self.decision_log[-40:]
+            if nxt != self.current_axis:
+                self._switch(nxt, rule, reason)
+            else:
+                self.last_rule, self.last_reason = rule, reason
+        signal_state = self._signal_state()
 
-        steps.append({
-            "name": "DECISION",
-            "detail": {
-                "green": self.current_green,
-                "remaining": round(max(self.green_remaining, 0.0), 1),
-                "reason": self.decision_log[-1]["reason"] if self.decision_log else "—",
-            },
-        })
+        a, b = list(axis_counts.keys())
+        both_congested = axis_counts[a] >= HIGH_THRESHOLD and axis_counts[b] >= HIGH_THRESHOLD
+        starved = [ax for ax, w in self.axis_wait.items() if w > MAX_WAIT]
+        locked = AXIS_CONFLICTS.get(self.current_axis)
 
-        # ── STEP 6 · SIGNAL STATE ─────────────────────────────────────────
-        signal_state = {
-            d: ("green" if d == self.current_green else "red") for d in DIRECTIONS
-        }
-        steps.append({"name": "SIGNAL STATE", "detail": signal_state})
+        steps = [
+            {"name": "VEHICLE COUNTS", "detail": dict(axis_counts)},
+            {"name": "CONGESTION", "alert": both_congested,
+             "detail": "BOTH AXES CONGESTED" if both_congested else "normal flow"},
+            {"name": "STARVATION", "alert": starved,
+             "detail": {ax: round(self.axis_wait[ax], 1) for ax in AXES}},
+            {"name": "PEDESTRIANS", "alert": bool(crossing_axes),
+             "detail": sorted(crossing_axes) if crossing_axes else "none crossing"},
+            {"name": "CONFLICT LOCK", "alert": False,
+             "detail": f"{self.current_axis} green · {locked} locked red"},
+            {"name": "DECISION", "detail": {"axis": self.current_axis,
+                                            "rule": self.last_rule, "reason": self.last_reason}},
+            {"name": "SIGNAL STATE", "detail": signal_state},
+        ]
 
         return {
             "steps": steps,
             "signal_state": signal_state,
-            "current_green": self.current_green,
-            "green_remaining": max(self.green_remaining, 0.0),
-            "wait_times": dict(self.wait_times),
-            "loads": loads,
+            "current_axis": self.current_axis,
+            "axis_lock": {"green_axis": self.current_axis, "locked_axis": locked},
+            "green_held_for": self.green_held_for,
+            "hold_remaining": max(0.0, MAX_HOLD_TIME - self.green_held_for),
+            "axis_counts": axis_counts,
+            "axis_wait": dict(self.axis_wait),
+            "last_rule": self.last_rule,
+            "last_reason": self.last_reason,
             "decision_log": list(self.decision_log),
         }
