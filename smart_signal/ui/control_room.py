@@ -9,7 +9,9 @@ from engine.decision_flow import DecisionFlow, MAX_HOLD_TIME, AXIS_LABEL, AXES
 from ui.traffic_light import traffic_light_html
 from video import live_stream as ls
 from video.sources import ImageSource, VideoSource, CameraSource
-
+from engine.decision_flow import (
+    DecisionFlow, MAX_HOLD_TIME, AXIS_LABEL, AXES, YELLOW_TIME,
+)
 # Roman Numeral formatting for Art Deco aesthetic
 MODE_LABEL = {"image": "STILL IMAGE", "video": "MOTION PICTURE", "live": "LIVE APPARATUS"}
 DOCK_HEIGHT = {"2 × 2": 36, "1 × 4": 58, "4 × 1": 18}
@@ -173,36 +175,63 @@ def _empty(msg: str) -> str:
 def _decision_rail(result) -> str:
     dec = result["decision"] if "decision" in result else result
     axis = dec.get("current_axis")
+    phase = dec.get("phase", "green")
+    pending = dec.get("pending_axis")
     held = dec.get("green_held_for", 0.0)
-    held_disp = min(held, MAX_HOLD_TIME)
+    yellow_timer = dec.get("yellow_timer", 0.0)
     axis_counts = dec.get("axis_counts", {})
     axis_wait = dec.get("axis_wait", {})
-    light = traffic_light_html("green", scale=1.15)
-    hold_pct = min(held / MAX_HOLD_TIME, 1.0) * 100
+
+    is_yellow = phase == "yellow"
+    lamp_state = "yellow" if is_yellow else "green"
+    light = traffic_light_html(lamp_state, scale=1.15)
+
+    if is_yellow:
+        yellow_remaining = max(0.0, YELLOW_TIME - yellow_timer)
+        title = f'{AXIS_LABEL.get(axis, "—")} · CLEARING'
+        title_color = C["topaz"]
+        subtitle = f'CHANGING TO {AXIS_LABEL.get(pending, "—")} · {yellow_remaining:.0f}s'
+        bar_pct = min(yellow_timer / YELLOW_TIME, 1.0) * 100
+        bar_color = C["topaz"]
+    else:
+        held_disp = min(held, MAX_HOLD_TIME)
+        title = AXIS_LABEL.get(axis, "—")
+        title_color = C["gold-light"]
+        subtitle = f'FLOW ENABLED · {held_disp:.0f}s / {MAX_HOLD_TIME}s'
+        bar_pct = min(held / MAX_HOLD_TIME, 1.0) * 100
+        bar_color = C["gold"]
+
     active = (
         f'<div class="ss-card ss-card-active">{_card_title("Active Phase")}'
         f'<div style="display:flex;align-items:center;gap:16px;">{light}'
         f'<div style="flex:1;">'
-        f'<div style="font-family:{F_DISPLAY};font-size:24px;letter-spacing:0.1em;color:{C["gold-light"]};">{AXIS_LABEL.get(axis, "—")}</div>'
+        f'<div style="font-family:{F_DISPLAY};font-size:22px;letter-spacing:0.08em;color:{title_color};">{title}</div>'
         f'<div style="font-family:{F_BODY};font-size:11px;color:{C["text-dim"]};margin-top:4px;letter-spacing:0.1em;text-transform:uppercase;">'
-        f'FLOW ENABLED · {held_disp:.0f}s / {MAX_HOLD_TIME}s</div></div></div>'
+        f'{subtitle}</div></div></div>'
         f'<div style="margin-top:14px;height:4px;background:{C["bg"]};border-radius:0px;overflow:hidden;'
-        f'border:1px solid {C["border"]};"><div style="width:{hold_pct:.0f}%;height:100%;background:{C["gold"]};'
+        f'border:1px solid {C["border"]};"><div style="width:{bar_pct:.0f}%;height:100%;background:{bar_color};'
         f'transition:width .3s;"></div></div>'
         f'<div style="margin-top:12px;font-size:11px;color:{C["text-dim"]};font-family:{F_BODY};letter-spacing:0.05em;text-transform:uppercase;">'
         f'<span style="color:{C["gold"]};">{dec.get("last_rule", "")}</span><br/>'
         f'{dec.get("last_reason", "")}</div></div>'
     )
 
-    # ── Crossing protection ─────────
+    # ── Axis interlock (green / clearing / next / halted) ─────────────────
     lock_rows = ""
     for ax in ("NS", "EW"):
         dirs = AXES[ax]
-        is_green = ax == dec.get("current_axis")
         arrows = " ".join(DIR_META[d]["arrow"] for d in dirs)
-        if is_green:
+        if ax == axis and is_yellow:
+            state_html = f'<span style="color:{C["topaz"]};font-family:{F_DISPLAY};font-size:12px;letter-spacing:0.1em;">◆ CLEARING</span>'
+            edge = f"border-left:2px solid {C['topaz']};"
+            dim = ""
+        elif ax == axis:
             state_html = f'<span style="color:{C["gold-light"]};font-family:{F_DISPLAY};font-size:12px;letter-spacing:0.1em;">◆ CLEAR</span>'
             edge = f"border-left:2px solid {C['gold']};"
+            dim = ""
+        elif ax == pending:
+            state_html = f'<span style="color:{C["gold"]};font-family:{F_DISPLAY};font-size:12px;letter-spacing:0.1em;">◇ NEXT</span>'
+            edge = f"border-left:2px dashed {C['gold']};"
             dim = ""
         else:
             state_html = f'<span style="color:{C["ruby"]};font-family:{F_DISPLAY};font-size:12px;letter-spacing:0.1em;">◇ HALTED</span>'
@@ -218,7 +247,7 @@ def _decision_rail(result) -> str:
         f'<div class="ss-card">{_card_title("Axis Interlock")}'
         f'{lock_rows}'
         f'<div style="font-size:10px;font-family:{F_BODY};color:{C["text-faint"]};margin-top:10px;line-height:1.6;text-transform:uppercase;letter-spacing:0.05em;">'
-        f'Strict mechanical exclusivity enforced. Only one axis may proceed simultaneously.</div></div>'
+        f'Strict mechanical exclusivity enforced. Only one axis may proceed at a time.</div></div>'
     )
 
     max_c = max(axis_counts.values()) if axis_counts else 1
@@ -252,6 +281,9 @@ def _decision_rail(result) -> str:
             chain += (f'<div class="ss-chain" style="font-family:{F_BODY};font-size:11px;margin-bottom:6px;border-bottom:1px solid rgba(212,175,55,0.1);padding-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;"><span style="color:{C["text-dim"]};">DECISION →</span> '
                       f'<b style="color:{C["gold-light"]};">{AXIS_LABEL.get(step["detail"]["axis"], "")}</b> '
                       f'· <span style="color:{C["text"]};">{step["detail"]["rule"]}</span></div>')
+        elif name == "PHASE" and step.get("alert"):
+            chain += (f'<div class="ss-chain" style="font-family:{F_BODY};font-size:11px;margin-bottom:6px;border-bottom:1px solid rgba(212,175,55,0.1);padding-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;"><span style="color:{C["text-dim"]};">PHASE →</span> '
+                      f'<b style="color:{C["topaz"]};">{step["detail"]}</b></div>')
         elif name == "CONFLICT LOCK":
             chain += (f'<div class="ss-chain" style="font-family:{F_BODY};font-size:11px;margin-bottom:6px;border-bottom:1px solid rgba(212,175,55,0.1);padding-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;"><span style="color:{C["text-dim"]};">INTERLOCK →</span> '
                       f'<b style="color:{C["ruby"]};">{step["detail"]}</b></div>')
@@ -269,11 +301,11 @@ def _decision_rail(result) -> str:
     log_card = f'<div class="ss-card">{_card_title("Audit Ledger")}{log or _empty("No entries found")}</div>'
 
     rules = (f'<div class="ss-card">{_card_title("Operational Mandates")}'
-             f'<div style="font-family:{F_BODY};font-size:11px;color:{C["gold"]};text-transform:uppercase;letter-spacing:0.1em;text-align:center;padding:10px;border:1px solid {C["border"]};">LOW ≤ 5 &nbsp;·&nbsp; HIGH ≥ 15<br><br>HOLD {MAX_HOLD_TIME}s &nbsp;·&nbsp; STARVE 90s</div></div>')
+             f'<div style="font-family:{F_BODY};font-size:11px;color:{C["gold"]};text-transform:uppercase;letter-spacing:0.1em;text-align:center;padding:10px;border:1px solid {C["border"]};">'
+             f'LOW ≤ 5 · HIGH ≥ 15<br><br>MIN GREEN {10}s · HOLD {MAX_HOLD_TIME}s<br><br>AMBER {YELLOW_TIME}s · STARVE 90s</div></div>')
 
     return (f'<div class="ss-rail">{active}{conflict_card}{load_card}{wait_card}'
             f'{chain_card}{log_card}{rules}</div>')
-
 
 def _get_flow() -> DecisionFlow:
     if "decision_flow" not in st.session_state:
