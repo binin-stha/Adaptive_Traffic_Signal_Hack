@@ -7,10 +7,7 @@ from theme.styles import THEME_CSS, DASHBOARD_CSS
 from ui.control_room import control_room
 from ui.setup_view import setup_view
 
-C = {"surface": "#141414", "border-h": "#D4AF37", "gold": "#D4AF37",
-     "text-dim": "#888888"}
-F_DISPLAY = "'Marcellus', serif"
-F_BODY = "'Josefin Sans', sans-serif"
+from theme.tokens import C, F_DISPLAY, F_BODY
 
 
 def main() -> None:

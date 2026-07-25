@@ -32,6 +32,7 @@ class _SharedState:
         self.running = {}  # direction -> playing?
         self.alive = {}    # direction -> worker alive?
         self.port = None
+        self.decision_result = None   
 
 
 shared = _SharedState()

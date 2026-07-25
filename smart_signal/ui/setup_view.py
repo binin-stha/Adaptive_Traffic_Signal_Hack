@@ -1,22 +1,13 @@
 """Setup view — top-down intersection layout, Art Deco styling."""
 
 from typing import List
-
+import json
 import cv2
 import streamlit as st
 
 from config.constants import DIRECTIONS, DIR_META
+from theme.tokens import C, F_DISPLAY, F_BODY
 from ui.annotation_panel import annotation_panel
-
-C = {
-    "bg": "#0A0A0A", "surface": "#141414",
-    "border": "rgba(212, 175, 55, 0.3)", "border-h": "#D4AF37",
-    "text": "#F2F0E4", "text-dim": "#888888", "text-faint": "#5C5C5C",
-    "gold": "#D4AF37", "gold-light": "#F2E8C4",
-}
-F_DISPLAY = "'Marcellus', serif"
-F_BODY = "'Josefin Sans', sans-serif"
-
 
 def _get_active() -> List[str]:
     if "active_directions" not in st.session_state:
@@ -147,6 +138,39 @@ def setup_view() -> None:
     with r2b: _direction_cell("south")
     with r2c: _corner_cell()
 
+    # ── Layout Vault — export / import ────────────────────────────────────
+    st.markdown(f'<div style="height:1px;border-top:2px double {C["border"]};margin:28px 0;"></div>',
+                unsafe_allow_html=True)
+    st.markdown("#### LAYOUT VAULT")
+    st.caption("Export your annotated intersection once, then re-import it for the same footage — no re-drawing.")
+
+    v1, v2 = st.columns(2)
+    with v1:
+        export = {d: st.session_state.config[d]["shapes"] for d in DIRECTIONS}
+        st.download_button(
+            "◆ EXPORT LAYOUT",
+            json.dumps(export, default=str, indent=2),
+            file_name="auta_intersection_layout.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    with v2:
+        uploaded_layout = st.file_uploader(
+            "Import layout", type=["json"], key="layout_upload", label_visibility="collapsed")
+        if uploaded_layout is not None:
+            if st.button("◆ APPLY IMPORTED LAYOUT", key="apply_layout", use_container_width=True):
+                try:
+                    data = json.loads(uploaded_layout.getvalue().decode("utf-8"))
+                    for d in DIRECTIONS:
+                        if d in data:
+                            st.session_state.config[d]["shapes"] = [
+                                {**s, "points": [tuple(p) for p in s.get("points", [])]}
+                                for s in data[d]
+                            ]
+                    st.rerun()
+                except Exception:
+                    st.error("Could not parse that layout file.")
+                    
     selected = st.session_state.get("annotate_dir")
     if selected:
         st.markdown(f'<div style="height:1px;border-top:2px double {C["border"]};margin:28px 0;"></div>',

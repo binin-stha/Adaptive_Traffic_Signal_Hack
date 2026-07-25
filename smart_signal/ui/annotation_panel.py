@@ -1,5 +1,6 @@
 """Annotation panel — one-click polygon/line drawing via a native Streamlit component."""
 
+from geometry.auto_annotate import auto_suggest_lanes
 import base64
 import os
 from io import BytesIO
@@ -12,22 +13,10 @@ import streamlit.components.v1 as components
 from PIL import Image
 
 from config.constants import DIRECTIONS, DIR_COLORS, CANVAS_HEIGHT
+from theme.tokens import C, F_DISPLAY, F_BODY
 from visualization.annotate import annotate_frame
 from video import live_stream as ls
 
-# ── Design tokens (Art Deco Luxury Palette) ───────
-C = {
-    "bg":        "#0A0A0A", # Obsidian Black
-    "surface":   "#141414", # Rich Charcoal
-    "border":    "rgba(212, 175, 55, 0.3)", # Faint Gold
-    "border-h":  "#D4AF37", # Solid Gold
-    "text":      "#F2F0E4", # Champagne Cream
-    "text-dim":  "#888888", # Pewter
-    "text-faint":"#5C5C5C", # Darker Pewter
-    "gold":      "#D4AF37", # Metallic Gold
-}
-F_DISPLAY = "'Marcellus', serif"
-F_BODY = "'Josefin Sans', sans-serif"
 
 
 def _invalidate_control_room() -> None:
@@ -53,7 +42,7 @@ def draw_shape_tool(
         width=width,
         height=height,
         mode=mode,
-        accent=C["gold"], # Override standard accent with Gatsby Gold
+        accent=C["gold-bright"],  # bright gold pops against the photo
         key=key,
         default=None,
     )
@@ -182,6 +171,31 @@ def annotation_panel(direction: str) -> None:
     scale = CANVAS_HEIGHT / h
     cfg["scale"] = scale
     disp_w, disp_h = int(w * scale), CANVAS_HEIGHT
+
+    # ── Model-assisted drafting ───────────────────────────────────────────
+    _section_label("Model-Assisted Drafting")
+    a1, a2 = st.columns([2, 1.5])
+    with a1:
+        orientation = st.radio(
+            "Lane orientation", ["vertical", "horizontal"],
+            horizontal=True, key=f"orient_{direction}", label_visibility="collapsed")
+    with a2:
+        if st.button("◆ AUTO-DRAFT LANES", key=f"auto_{direction}", use_container_width=True):
+            with st.spinner("Running detection model…"):
+                polys = auto_suggest_lanes(
+                    frame, st.session_state.get("model_name", "yolov8n.pt"), orientation)
+            if not polys:
+                st.warning("No lane clusters found — ensure vehicles are visible, or draft manually.")
+            else:
+                n = len(cfg["shapes"])
+                for i, poly in enumerate(polys):
+                    cfg["shapes"].append({
+                        "label": "lane", "points": poly,
+                        "id": f"{direction}_lane_{n + i + 1}",
+                        "side": direction, "travel": "incoming", "focus": True,
+                    })
+                st.rerun()
+    st.caption("vertical = lanes run top↕bottom · horizontal = lanes run left↔right · suggestions are a starting point — refine below")
 
     # ── Tool selection ─────────────────────────────────────────────────────
     _section_label("DRAFTING IMPLEMENT")
